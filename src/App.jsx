@@ -26,11 +26,20 @@ function App() {
     const [revisions, setRevisions] = useState([]);
 
     useEffect(() => {
+        if (!supabase) {
+            setLoading(false);
+            return;
+        }
+
         // Check for active session
-        supabase.auth.getSession().then(({ data: { session } }) => {
+        supabase.auth.getSession().then(({ data: { session }, error }) => {
+            if (error) console.error('Supabase Session Error:', error);
             setSession(session);
             if (session) fetchUserData(session.user.id);
             else setLoading(false);
+        }).catch(err => {
+            console.error('Session Catch:', err);
+            setLoading(false);
         });
 
         // Listen for auth changes
@@ -45,7 +54,7 @@ function App() {
             }
         });
 
-        return () => subscription.unsubscribe();
+        return () => subscription?.unsubscribe();
     }, []);
 
     const fetchUserData = async (userId) => {
@@ -235,6 +244,30 @@ function App() {
     }
 
     if (!session) {
+        if (!supabase) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 text-center">
+                    <div className="max-w-md bg-white p-10 rounded-[32px] shadow-2xl border border-red-100">
+                        <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <Cloud size={32} />
+                        </div>
+                        <h2 className="text-2xl font-black text-slate-900 mb-4 tracking-tight">Configuração Pendente</h2>
+                        <p className="text-slate-500 mb-8 leading-relaxed">
+                            As chaves do Supabase não foram encontradas. Isso acontece porque:<br />
+                            <span className="font-bold text-slate-700">1. Local:</span> O arquivo <code className="bg-slate-100 px-2 rounded">.env</code> não foi lido.<br />
+                            <span className="font-bold text-slate-700">2. Vercel:</span> Você esqueceu de adicionar as variáveis de ambiente no painel da Vercel.
+                        </p>
+                        <div className="bg-slate-50 p-4 rounded-2xl text-left font-mono text-[10px] space-y-1 mb-6 border border-slate-200">
+                            <p className="text-blue-600 font-bold">VITE_SUPABASE_URL</p>
+                            <p className="text-blue-600 font-bold">VITE_SUPABASE_ANON_KEY</p>
+                        </div>
+                        <p className="text-xs text-slate-400 font-medium italic">
+                            Adicione estas chaves e reinicie o servidor/deploy.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
         return <Auth />;
     }
 
