@@ -7,13 +7,15 @@ import {
     LogOut,
     User,
     Cloud,
-    Loader2
+    Loader2,
+    Zap
 } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
 import Edital from './components/Edital';
 import Stats from './components/Stats';
 import Auth from './components/Auth';
+import Mentoria from './components/Mentoria';
 import { supabase } from './lib/supabase';
 import { INITIAL_DATA, REVISION_INTERVALS } from './data/syllabus';
 
@@ -24,6 +26,7 @@ function App() {
     const [progress, setProgress] = useState({});
     const [studyLog, setStudyLog] = useState([]);
     const [revisions, setRevisions] = useState([]);
+    const [completedDays, setCompletedDays] = useState([]);
 
     useEffect(() => {
         if (!supabase) {
@@ -50,6 +53,7 @@ function App() {
                 setProgress({});
                 setStudyLog([]);
                 setRevisions([]);
+                setCompletedDays([]);
                 setLoading(false);
             }
         });
@@ -86,12 +90,6 @@ function App() {
                 .order('date', { ascending: false });
             setStudyLog(logData || []);
 
-            // Fetch Revisions
-            const { data: revisionData } = await supabase
-                .from('revisions')
-                .select('*')
-                .eq('user_id', userId);
-
             setRevisions((revisionData || []).map(r => ({
                 id: r.id,
                 topicId: r.topic_id,
@@ -101,6 +99,20 @@ function App() {
                 completed: r.completed,
                 interval: r.interval
             })));
+
+            // Fetch Mentoria Progress (Safe Fetch)
+            try {
+                const { data: mentoriaData, error: mError } = await supabase
+                    .from('mentoria_progress')
+                    .select('completed_days')
+                    .eq('user_id', userId);
+
+                if (!mError && mentoriaData && mentoriaData.length > 0) {
+                    setCompletedDays(mentoriaData[0].completed_days || []);
+                }
+            } catch (mErr) {
+                console.warn('Mentoria table might not exist yet:', mErr);
+            }
 
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -210,6 +222,28 @@ function App() {
         }
     };
 
+    const toggleMentoriaDay = async (day) => {
+        if (!session) return;
+        const userId = session.user.id;
+        let newCompletedDays;
+
+        if (completedDays.includes(day)) {
+            newCompletedDays = completedDays.filter(d => d !== day);
+        } else {
+            newCompletedDays = [...completedDays, day];
+        }
+
+        const { error } = await supabase
+            .from('mentoria_progress')
+            .upsert({ user_id: userId, completed_days: newCompletedDays }, { onConflict: 'user_id' });
+
+        if (!error) {
+            setCompletedDays(newCompletedDays);
+        } else {
+            console.error('Error updating mentoria progress:', error);
+        }
+    };
+
     const handleLogout = async () => {
         await supabase.auth.signOut();
     };
@@ -309,6 +343,14 @@ function App() {
                             <span className="font-bold tracking-tight">Desempenho</span>
                             {activeTab === 'stats' && <ChevronRight size={16} className="ml-auto opacity-50" />}
                         </button>
+                        <button
+                            onClick={() => setActiveTab('mentoria')}
+                            className={`nav-item w-full group ${activeTab === 'mentoria' ? 'nav-item-active' : 'nav-item-inactive'}`}
+                        >
+                            <Zap size={22} className={activeTab === 'mentoria' ? 'text-white' : 'group-hover:text-orange-400 transition-colors'} />
+                            <span className="font-bold tracking-tight">Mentoria</span>
+                            {activeTab === 'mentoria' && <ChevronRight size={16} className="ml-auto opacity-50" />}
+                        </button>
 
                         <div className="pt-8 mt-8 border-t border-slate-800/50 space-y-1">
                             <p className="px-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Minha Conta</p>
@@ -372,6 +414,12 @@ function App() {
                         progress={progress}
                     />
                 )}
+                {activeTab === 'mentoria' && (
+                    <Mentoria
+                        completedDays={completedDays}
+                        onToggleDay={toggleMentoriaDay}
+                    />
+                )}
             </main>
 
             {/* Mobile Nav */}
@@ -387,6 +435,10 @@ function App() {
                 <button onClick={() => setActiveTab('stats')} className={`flex flex-col items-center justify-center w-16 h-16 rounded-2xl transition-all duration-300 ${activeTab === 'stats' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/40 scale-110 -translate-y-2' : 'text-slate-500 hover:text-slate-300'}`}>
                     <Award size={24} />
                     <span className="text-[9px] font-black uppercase tracking-tighter mt-1">Estatísticas</span>
+                </button>
+                <button onClick={() => setActiveTab('mentoria')} className={`flex flex-col items-center justify-center w-16 h-16 rounded-2xl transition-all duration-300 ${activeTab === 'mentoria' ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/40 scale-110 -translate-y-2' : 'text-slate-500 hover:text-slate-300'}`}>
+                    <Zap size={24} />
+                    <span className="text-[9px] font-black uppercase tracking-tighter mt-1">Mentor</span>
                 </button>
                 <button onClick={handleLogout} className="flex flex-col items-center justify-center w-16 h-16 rounded-2xl text-slate-500 hover:text-red-400 transition-all">
                     <LogOut size={24} />
