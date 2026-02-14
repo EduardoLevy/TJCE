@@ -31,7 +31,7 @@ const Edital = ({ progress, registerStudySession }) => {
                 </div>
                 <div className="space-y-1">
                     <p className="font-bold text-amber-900 leading-tight">Dica de Estudo</p>
-                    <p className="text-sm text-amber-800 opacity-90 leading-relaxed font-medium">Marque aqui os tópicos ao finalizar a **teoria**. O sistema agendará automaticamente revisões em ciclos de 1, 3, 7, 15 e 30 dias para garantir a memorização.</p>
+                    <p className="text-sm text-amber-800 opacity-90 leading-relaxed font-medium">Marque aqui os tópicos ao finalizar a <b>teoria</b>. O sistema agendará automaticamente revisões em ciclos de 1, 3, 7, 15 e 30 dias para garantir a memorização.</p>
                 </div>
             </div>
 

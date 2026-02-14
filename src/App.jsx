@@ -3,89 +3,206 @@ import {
     BookOpen,
     BarChart2,
     Award,
-    ChevronRight
+    ChevronRight,
+    LogOut,
+    User,
+    Cloud,
+    Loader2
 } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
 import Edital from './components/Edital';
 import Stats from './components/Stats';
+import Auth from './components/Auth';
+import { supabase } from './lib/supabase';
 import { INITIAL_DATA, REVISION_INTERVALS } from './data/syllabus';
 
 function App() {
+    const [session, setSession] = useState(null);
+    const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState('dashboard');
     const [progress, setProgress] = useState({});
     const [studyLog, setStudyLog] = useState([]);
     const [revisions, setRevisions] = useState([]);
 
-    // Load data from local storage
     useEffect(() => {
-        const savedProgress = localStorage.getItem('tjce_progress');
-        const savedLog = localStorage.getItem('tjce_log');
-        const savedRevisions = localStorage.getItem('tjce_revisions');
+        // Check for active session
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            setSession(session);
+            if (session) fetchUserData(session.user.id);
+            else setLoading(false);
+        });
 
-        if (savedProgress) setProgress(JSON.parse(savedProgress));
-        if (savedLog) setStudyLog(JSON.parse(savedLog));
-        if (savedRevisions) setRevisions(JSON.parse(savedRevisions));
+        // Listen for auth changes
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setSession(session);
+            if (session) fetchUserData(session.user.id);
+            else {
+                setProgress({});
+                setStudyLog([]);
+                setRevisions([]);
+                setLoading(false);
+            }
+        });
+
+        return () => subscription.unsubscribe();
     }, []);
 
-    // Save data to local storage
-    useEffect(() => {
-        localStorage.setItem('tjce_progress', JSON.stringify(progress));
-        localStorage.setItem('tjce_log', JSON.stringify(studyLog));
-        localStorage.setItem('tjce_revisions', JSON.stringify(revisions));
-    }, [progress, studyLog, revisions]);
+    const fetchUserData = async (userId) => {
+        setLoading(true);
+        try {
+            // Fetch Progress
+            const { data: progressData } = await supabase
+                .from('topic_progress')
+                .select('*')
+                .eq('user_id', userId);
 
-    const registerStudySession = (topicId, topicTitle, subject, minutes, questionsTotal, questionsCorrect) => {
+            const progressMap = {};
+            progressData?.forEach(p => {
+                progressMap[p.topic_id] = {
+                    studied: p.studied,
+                    lastStudied: p.last_studied,
+                    totalQuestions: p.total_questions,
+                    correctQuestions: p.correct_questions,
+                    timesStudied: p.times_studied
+                };
+            });
+            setProgress(progressMap);
+
+            // Fetch Log
+            const { data: logData } = await supabase
+                .from('study_log')
+                .select('*')
+                .eq('user_id', userId)
+                .order('date', { ascending: false });
+            setStudyLog(logData || []);
+
+            // Fetch Revisions
+            const { data: revisionData } = await supabase
+                .from('revisions')
+                .select('*')
+                .eq('user_id', userId);
+
+            setRevisions((revisionData || []).map(r => ({
+                id: r.id,
+                topicId: r.topic_id,
+                topicTitle: r.topic_title,
+                subject: r.subject,
+                dueDate: r.due_date,
+                completed: r.completed,
+                interval: r.interval
+            })));
+
+        } catch (error) {
+            console.error('Error fetching data:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const registerStudySession = async (topicId, topicTitle, subject, minutes, questionsTotal, questionsCorrect) => {
+        if (!session) return;
         const today = new Date().toISOString().split('T')[0];
+        const userId = session.user.id;
 
-        // 1. Update Progress stats for the topic
-        setProgress(prev => ({
-            ...prev,
-            [topicId]: {
-                studied: true,
-                lastStudied: today,
-                totalQuestions: (prev[topicId]?.totalQuestions || 0) + parseInt(questionsTotal || 0),
-                correctQuestions: (prev[topicId]?.correctQuestions || 0) + parseInt(questionsCorrect || 0),
-                timesStudied: (prev[topicId]?.timesStudied || 0) + 1
-            }
-        }));
+        // 1. Update Progress in Supabase
+        const currentProgress = progress[topicId] || {};
+        const newProgress = {
+            user_id: userId,
+            topic_id: topicId,
+            studied: true,
+            last_studied: today,
+            total_questions: (currentProgress.totalQuestions || 0) + parseInt(questionsTotal || 0),
+            correct_questions: (currentProgress.correctQuestions || 0) + parseInt(questionsCorrect || 0),
+            times_studied: (currentProgress.timesStudied || 0) + 1
+        };
 
-        // 2. Add to Study Log (for daily goal tracking)
-        setStudyLog(prev => [...prev, {
-            id: Date.now(),
+        const { error: pError } = await supabase
+            .from('topic_progress')
+            .upsert(newProgress, { onConflict: 'user_id,topic_id' });
+
+        if (!pError) {
+            setProgress(prev => ({
+                ...prev,
+                [topicId]: {
+                    studied: true,
+                    lastStudied: today,
+                    totalQuestions: newProgress.total_questions,
+                    correctQuestions: newProgress.correct_questions,
+                    timesStudied: newProgress.times_studied
+                }
+            }));
+        }
+
+        // 2. Add to Study Log
+        const newLogEntry = {
+            user_id: userId,
             date: today,
-            topicId,
-            topicTitle,
-            subject,
+            topic_id: topicId,
+            topic_title: topicTitle,
+            subject: subject,
             minutes: parseInt(minutes)
-        }]);
+        };
 
-        // 3. Schedule Revisions (Spaced Repetition)
+        const { data: logData, error: lError } = await supabase
+            .from('study_log')
+            .insert(newLogEntry)
+            .select();
+
+        if (!lError && logData) {
+            setStudyLog(prev => [logData[0], ...prev]);
+        }
+
+        // 3. Schedule Revisions
         const newRevisions = [];
         REVISION_INTERVALS.forEach(interval => {
             const revDate = new Date();
             revDate.setDate(revDate.getDate() + interval);
             newRevisions.push({
-                id: Date.now() + interval,
-                topicId,
-                topicTitle,
+                user_id: userId,
+                topic_id: topicId,
+                topic_title: topicTitle,
                 subject,
-                dueDate: revDate.toISOString().split('T')[0],
+                due_date: revDate.toISOString().split('T')[0],
                 completed: false,
                 interval: interval
             });
         });
 
-        setRevisions(prev => {
-            const filtered = prev.filter(r => r.topicId !== topicId || r.completed);
-            return [...filtered, ...newRevisions];
-        });
+        // Remove old pending revisions for same topic and insert new ones
+        await supabase.from('revisions').delete().eq('user_id', userId).eq('topic_id', topicId).eq('completed', false);
+        const { data: revData, error: rError } = await supabase.from('revisions').insert(newRevisions).select();
 
-        // Custom success message could be added here instead of standard alert for "Wow" factor
+        if (!rError && revData) {
+            setRevisions(prev => {
+                const filtered = prev.filter(r => r.topicId !== topicId || r.completed);
+                return [...filtered, ...revData.map(r => ({
+                    id: r.id,
+                    topicId: r.topic_id,
+                    topicTitle: r.topic_title,
+                    subject: r.subject,
+                    dueDate: r.due_date,
+                    completed: r.completed,
+                    interval: r.interval
+                }))];
+            });
+        }
     };
 
-    const completeRevision = (revId) => {
-        setRevisions(prev => prev.map(r => r.id === revId ? { ...r, completed: true } : r));
+    const completeRevision = async (revId) => {
+        if (!session) return;
+        const { error } = await supabase
+            .from('revisions')
+            .update({ completed: true })
+            .eq('id', revId);
+
+        if (!error) {
+            setRevisions(prev => prev.map(r => r.id === revId ? { ...r, completed: true } : r));
+        }
+    };
+
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
     };
 
     const getTodayMinutes = () => {
@@ -107,6 +224,19 @@ function App() {
         const studiedTopics = Object.values(progress).filter(p => p.studied).length;
         return Math.round((studiedTopics / totalTopics) * 100);
     };
+
+    if (loading) {
+        return (
+            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
+                <Loader2 size={40} className="text-blue-600 animate-spin" />
+                <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Sincronizando Nuvem...</p>
+            </div>
+        );
+    }
+
+    if (!session) {
+        return <Auth />;
+    }
 
     return (
         <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-28 md:pb-0 md:pl-72">
@@ -146,6 +276,29 @@ function App() {
                             <span className="font-bold tracking-tight">Desempenho</span>
                             {activeTab === 'stats' && <ChevronRight size={16} className="ml-auto opacity-50" />}
                         </button>
+
+                        <div className="pt-8 mt-8 border-t border-slate-800/50 space-y-1">
+                            <p className="px-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Minha Conta</p>
+                            <div className="flex items-center gap-3 px-4 py-3 bg-slate-800/30 rounded-2xl border border-slate-700/20 mb-4">
+                                <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center shadow-lg">
+                                    <User size={18} className="text-white" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-bold text-white truncate">{session.user.email.split('@')[0]}</p>
+                                    <div className="flex items-center gap-1">
+                                        <Cloud size={10} className="text-blue-400" />
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Nuvem Ativa</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleLogout}
+                                className="nav-item w-full group nav-item-inactive hover:bg-red-500/10 hover:text-red-400 transition-all"
+                            >
+                                <LogOut size={22} className="group-hover:text-red-400 transition-colors" />
+                                <span className="font-bold tracking-tight">Sair da Conta</span>
+                            </button>
+                        </div>
                     </div>
                 </nav>
 
@@ -201,6 +354,10 @@ function App() {
                 <button onClick={() => setActiveTab('stats')} className={`flex flex-col items-center justify-center w-16 h-16 rounded-2xl transition-all duration-300 ${activeTab === 'stats' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/40 scale-110 -translate-y-2' : 'text-slate-500 hover:text-slate-300'}`}>
                     <Award size={24} />
                     <span className="text-[9px] font-black uppercase tracking-tighter mt-1">Estatísticas</span>
+                </button>
+                <button onClick={handleLogout} className="flex flex-col items-center justify-center w-16 h-16 rounded-2xl text-slate-500 hover:text-red-400 transition-all">
+                    <LogOut size={24} />
+                    <span className="text-[9px] font-black uppercase tracking-tighter mt-1">Sair</span>
                 </button>
             </nav>
         </div>
